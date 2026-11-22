@@ -31,7 +31,8 @@
     "db:reset": "npm run db:reset -w @greenforce/backend",
     "docker:up": "docker compose up --build",
     "docker:down": "docker compose down",
-    "verify": "npm run format:check && npm run lint && npm run typecheck && npm run test && npm run build"
+    "verify": "npm run format:check && npm run lint && npm run typecheck && npm run test && npm run build",
+    "build:frontend": "npm run build -w @greenforce/shared && npm run build -w @greenforce/frontend"
   },
   "devDependencies": {
     "@eslint/js": "9.39.5",
