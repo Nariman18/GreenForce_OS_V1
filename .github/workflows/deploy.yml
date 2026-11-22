@@ -1,0 +1,124 @@
+# Deploys published images to a Docker host over SSH. Provider-neutral: any VM with Docker Compose works.
+#
+# Called by release.yml (staging on main, production on tags) and runnable manually for redeploys and
+# rollbacks: Actions → Deploy → choose environment + image tag (e.g. sha-<commit>, 1.4.0).
+#
+# Per-environment configuration (Settings → Environments → staging / production):
+#   vars.DEPLOY_HOST        SSH host of the Docker server            (deploys are skipped while unset)
+#   vars.DEPLOY_USER        SSH user (member of the docker group)    default: deploy
+#   vars.DEPLOY_PATH        directory on the host                    default: /opt/greenforce
+#   vars.PUBLIC_URL         public HTTPS URL, used for smoke tests   e.g. https://staging.greenforce.example
+#   secrets.DEPLOY_SSH_KEY      private key for DEPLOY_USER
+#   secrets.DEPLOY_KNOWN_HOSTS  output of `ssh-keyscan <host>` (pins the host key)
+#   secrets.GHCR_PULL_TOKEN     optional: token with read:packages if the images are private
+# The host keeps its runtime secrets in <DEPLOY_PATH>/backend.env (template: deploy/backend.env.example).
+name: Deploy
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        type: string
+        required: true
+      image_tag:
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        type: choice
+        options: [staging, production]
+        required: true
+      image_tag:
+        description: Image tag to deploy (sha-<commit>, X.Y.Z, main) — use an older tag to roll back
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy ${{ inputs.image_tag }} to ${{ inputs.environment }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment:
+      name: ${{ inputs.environment }}
+      url: ${{ vars.PUBLIC_URL }}
+    env:
+      DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ vars.DEPLOY_USER || 'deploy' }}
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/opt/greenforce' }}
+      PUBLIC_URL: ${{ vars.PUBLIC_URL }}
+      IMAGE_TAG: ${{ inputs.image_tag }}
+    steps:
+      - name: Check configuration
+        id: config
+        run: |
+          if [ -z "${DEPLOY_HOST}" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "### Deployment to ${{ inputs.environment }} skipped"
+              echo "No \`DEPLOY_HOST\` is configured for this environment. Images were published; set the"
+              echo "environment variables and secrets listed in \`.github/workflows/deploy.yml\` to enable deploys."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.config.outputs.configured == 'true'
+
+      - name: Configure SSH
+        if: steps.config.outputs.configured == 'true'
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "${SSH_KEY}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "${KNOWN_HOSTS}" > ~/.ssh/known_hosts
+          {
+            echo "Host deploy-target"
+            echo "  HostName ${DEPLOY_HOST}"
+            echo "  User ${DEPLOY_USER}"
+            echo "  IdentityFile ~/.ssh/deploy_key"
+            echo "  StrictHostKeyChecking yes"
+          } > ~/.ssh/config
+
+      - name: Upload compose file and deploy script
+        if: steps.config.outputs.configured == 'true'
+        run: |
+          # shellcheck disable=SC2029 # values are expanded locally on purpose
+          ssh deploy-target "mkdir -p '${DEPLOY_PATH}'"
+          scp deploy/docker-compose.prod.yml "deploy-target:${DEPLOY_PATH}/docker-compose.yml"
+          scp deploy/remote-deploy.sh "deploy-target:${DEPLOY_PATH}/remote-deploy.sh"
+
+      - name: Log the host in to GHCR (private images only)
+        if: steps.config.outputs.configured == 'true'
+        env:
+          GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
+        run: |
+          if [ -n "${GHCR_PULL_TOKEN}" ]; then
+            printf '%s' "${GHCR_PULL_TOKEN}" | ssh deploy-target "docker login ghcr.io -u '${{ github.repository_owner }}' --password-stdin"
+          fi
+
+      - name: Migrate and roll out (automatic rollback on failure)
+        if: steps.config.outputs.configured == 'true'
+        run: |
+          REGISTRY="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}"
+          # shellcheck disable=SC2029 # values are expanded locally on purpose
+          ssh deploy-target "cd '${DEPLOY_PATH}' && IMAGE_REGISTRY='${REGISTRY}' IMAGE_TAG='${IMAGE_TAG}' sh remote-deploy.sh"
+
+      - name: Smoke test
+        if: steps.config.outputs.configured == 'true' && env.PUBLIC_URL != ''
+        run: |
+          curl --fail --silent --show-error --retry 10 --retry-delay 6 --retry-all-errors "${PUBLIC_URL}/api/v1/health"
+          curl --fail --silent --show-error --output /dev/null "${PUBLIC_URL}/login"
+          echo "### Deployed \`${IMAGE_TAG}\` to ${{ inputs.environment }} — ${PUBLIC_URL}" >> "$GITHUB_STEP_SUMMARY"

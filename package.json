@@ -1,0 +1,66 @@
+{
+  "name": "greenforce-os",
+  "version": "0.1.0",
+  "private": true,
+  "description": "GreenForce OS \u2014 jurisdiction-aware construction compliance MVP",
+  "type": "module",
+  "workspaces": [
+    "shared",
+    "backend",
+    "frontend"
+  ],
+  "engines": {
+    "node": ">=24.0.0",
+    "npm": ">=10.0.0"
+  },
+  "scripts": {
+    "build": "npm run build -w @greenforce/shared && npm run build -w @greenforce/backend && npm run build -w @greenforce/frontend",
+    "build:shared": "npm run build -w @greenforce/shared",
+    "dev": "npm run build:shared && concurrently -k -n shared,backend,frontend -c gray,blue,green \"npm run dev -w @greenforce/shared\" \"npm run dev -w @greenforce/backend\" \"npm run dev -w @greenforce/frontend\"",
+    "dev:backend": "npm run dev -w @greenforce/backend",
+    "dev:frontend": "npm run dev -w @greenforce/frontend",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "npm run build:shared && npm run typecheck --workspaces --if-present",
+    "test": "npm run build:shared && npm run test --workspaces --if-present",
+    "test:e2e": "npm run test:e2e -w @greenforce/frontend",
+    "db:migrate": "npm run db:migrate -w @greenforce/backend",
+    "db:seed": "npm run db:seed -w @greenforce/backend",
+    "db:reset": "npm run db:reset -w @greenforce/backend",
+    "docker:up": "docker compose up --build",
+    "docker:down": "docker compose down",
+    "verify": "npm run format:check && npm run lint && npm run typecheck && npm run test && npm run build"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.5",
+    "@types/node": "26.6.6",
+    "concurrently": "10.0.6",
+    "eslint": "9.39.5",
+    "eslint-config-next": "16.4.4",
+    "globals": "17.13.0",
+    "prettier": "3.9.10",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.72.1"
+  },
+  "allowScripts": {
+    "esbuild@0.18.20": true,
+    "esbuild@0.25.12": true,
+    "esbuild@0.28.2": true,
+    "unrs-resolver@1.12.2": true,
+    "@scarf/scarf": false,
+    "fsevents": false,
+    "prisma@7.10.1": true,
+    "@prisma/engines@7.10.1": true,
+    "@swc/core@1.16.21": true
+  },
+  "overrides": {
+    "@nestjs/cli": {
+      "minimatch": "11.0.4"
+    },
+    "@typescript-eslint/typescript-estree": {
+      "minimatch": "11.0.4"
+    }
+  }
+}

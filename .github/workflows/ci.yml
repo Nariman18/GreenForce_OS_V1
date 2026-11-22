@@ -1,0 +1,211 @@
+# Continuous integration — every automated check, in parallel where possible.
+#
+# Runs on pull requests, pushes to develop and the merge queue. Pushes to main and version tags run it through
+# release.yml (workflow_call), so every published image has passed exactly these checks.
+# Protect branches by requiring the single aggregate check "CI / ci-success".
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [develop]
+  merge_group:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  NEXT_TELEMETRY_DISABLED: "1"
+  CHECKPOINT_DISABLE: "1"
+  PRISMA_HIDE_UPDATE_MESSAGE: "1"
+
+jobs:
+  workflow-lint:
+    name: Lint workflows (actionlint)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker://rhysd/actionlint:1.7.12
+        with:
+          args: -color
+
+  quality:
+    name: Format · lint · typecheck
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Prettier
+        run: npm run format:check
+      - name: ESLint
+        run: npm run lint
+      - name: Type check (shared, backend incl. Prisma client, frontend)
+        run: npm run typecheck
+
+  test:
+    name: Tests · migrations
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:18.6-alpine3.24
+        env:
+          POSTGRES_USER: greenforce
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: greenforce
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U greenforce -d greenforce"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://greenforce:ci-only-password@localhost:5432/greenforce
+      TEST_DATABASE_URL: postgresql://greenforce:ci-only-password@localhost:5432/greenforce
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Apply migrations to an empty database
+        run: npm run db:migrate
+      - name: Schema drift check (schema.prisma changed without a migration?)
+        run: npm run db:check -w @greenforce/backend
+      - name: Unit & integration tests (shared, backend on PostgreSQL, frontend)
+        run: npm test
+
+  build:
+    name: Build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Build shared → backend → frontend
+        run: npm run build
+
+  security:
+    name: Dependency audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Production dependencies — fail on moderate or worse
+        run: npm audit --omit=dev --audit-level=moderate
+      - name: All dependencies (incl. tooling) — fail on high or worse
+        run: npm audit --audit-level=high
+
+  e2e:
+    name: Docker stack · E2E · image scan
+    needs: [quality, test, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Throwaway secrets for this run (never stored)
+        run: |
+          DEMO_PASSWORD="ci-$(openssl rand -hex 12)"
+          echo "::add-mask::${DEMO_PASSWORD}"
+          {
+            echo "POSTGRES_PASSWORD=$(openssl rand -hex 16)"
+            echo "JWT_SECRET=$(openssl rand -hex 32)"
+            echo "DEMO_USER_PASSWORD=${DEMO_PASSWORD}"
+          } > backend/.env
+          echo "E2E_PASSWORD=${DEMO_PASSWORD}" >> "$GITHUB_ENV"
+
+      - name: Validate compose file
+        run: docker compose config --quiet
+
+      - name: Build and start postgres → migrate → backend → frontend
+        run: docker compose up --build --detach --wait --wait-timeout 300
+
+      - run: npm ci
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      - name: Install Chromium
+        run: npx --workspace @greenforce/frontend playwright install --with-deps chromium
+
+      - name: E2E journey
+        env:
+          E2E_BASE_URL: http://localhost:3000
+        run: npm run test:e2e
+
+      - name: Scan backend image (HIGH/CRITICAL with a fix available)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: greenforce-api:local
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Scan frontend image (HIGH/CRITICAL with a fix available)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: greenforce-web:local
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: playwright-report-${{ github.run_attempt }}
+          path: frontend/playwright-report
+          retention-days: 7
+
+      - name: Container logs
+        if: failure()
+        run: docker compose logs --no-color
+
+      - name: Stop the stack
+        if: always()
+        run: docker compose down --volumes
+
+  # Single required status check for branch protection / merge queue.
+  ci-success:
+    name: ci-success
+    if: always()
+    needs: [workflow-lint, quality, test, build, security, e2e]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: All CI jobs passed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "Job results: ${RESULTS}"
+          for result in ${RESULTS}; do
+            [ "${result}" = "success" ] || exit 1
+          done

@@ -1,0 +1,181 @@
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  moduleFormat        = "esm"
+  importFileExtension = "js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id           String   @id @default(uuid()) @db.Uuid
+  email        String   @unique
+  name         String
+  organization String
+  passwordHash String   @map("password_hash")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  projects  Project[]
+  evidence  Evidence[]
+  snapshots PassportSnapshot[]
+  events    AuditEvent[]
+
+  @@map("users")
+}
+
+model Property {
+  id           String   @id @default(uuid()) @db.Uuid
+  greenforceId String   @unique @map("greenforce_id")
+  jurisdiction String
+  sourceRef    String   @map("source_ref")
+  address      String
+  parcelId     String   @map("parcel_id")
+  /// Jurisdiction-specific intelligence, validated by PropertyDataSchema.
+  data         Json
+  overlays     Json
+  source       Json
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  projects Project[]
+
+  @@map("properties")
+}
+
+model Project {
+  id           String   @id @default(uuid()) @db.Uuid
+  ownerId      String   @map("owner_id") @db.Uuid
+  propertyId   String   @map("property_id") @db.Uuid
+  name         String
+  jurisdiction String
+  /// Contractor declarations, validated by ProjectSetupSchema.
+  setup        Json
+  /// Design data for computed checks, validated by ProjectMeasurementsSchema.
+  measurements Json
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  owner     User               @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  property  Property           @relation(fields: [propertyId], references: [id])
+  materials ProjectMaterial[]
+  evidence  Evidence[]
+  snapshots PassportSnapshot[]
+  events    AuditEvent[]
+
+  @@index([ownerId])
+  @@map("projects")
+}
+
+model Supplier {
+  id                     String   @id @default(uuid()) @db.Uuid
+  name                   String   @unique
+  country                String
+  ratingScore            Int      @map("rating_score")
+  result                 String
+  documentationValidTo   DateTime @map("documentation_valid_to") @db.Date
+  additionalInfoRequired Boolean  @default(false) @map("additional_info_required")
+  additionalInfoNote     String?  @map("additional_info_note")
+
+  materials Material[]
+
+  @@map("suppliers")
+}
+
+model Material {
+  id                 String    @id @default(uuid()) @db.Uuid
+  supplierId         String    @map("supplier_id") @db.Uuid
+  name               String    @unique
+  manufacturer       String
+  category           String
+  description        String
+  declaredUnit       String    @map("declared_unit")
+  gwp                Float?
+  gwpUnit            String    @map("gwp_unit")
+  epdNumber          String?   @map("epd_number")
+  epdProgramOperator String?   @map("epd_program_operator")
+  epdValidFrom       DateTime? @map("epd_valid_from") @db.Date
+  epdValidTo         DateTime? @map("epd_valid_to") @db.Date
+  attributes         Json
+  regions            String[]
+
+  supplier Supplier          @relation(fields: [supplierId], references: [id])
+  projects ProjectMaterial[]
+  evidence Evidence[]
+
+  @@map("materials")
+}
+
+model ProjectMaterial {
+  projectId  String   @map("project_id") @db.Uuid
+  materialId String   @map("material_id") @db.Uuid
+  selectedAt DateTime @default(now()) @map("selected_at") @db.Timestamptz
+
+  project  Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  material Material @relation(fields: [materialId], references: [id])
+
+  @@id([projectId, materialId])
+  @@map("project_materials")
+}
+
+model Evidence {
+  id             String    @id @default(uuid()) @db.Uuid
+  projectId      String    @map("project_id") @db.Uuid
+  ruleId         String    @map("rule_id")
+  requirementKey String    @map("requirement_key")
+  kind           String
+  source         String
+  fileName       String    @map("file_name")
+  mimeType       String    @map("mime_type")
+  sizeBytes      Int       @map("size_bytes")
+  sha256         String
+  storagePath    String?   @map("storage_path")
+  materialId     String?   @map("material_id") @db.Uuid
+  note           String?
+  verified       Boolean   @default(false)
+  verifiedAt     DateTime? @map("verified_at") @db.Timestamptz
+  uploadedById   String    @map("uploaded_by_id") @db.Uuid
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  project    Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  material   Material? @relation(fields: [materialId], references: [id])
+  uploadedBy User      @relation(fields: [uploadedById], references: [id])
+
+  @@index([projectId])
+  @@map("evidence")
+}
+
+model PassportSnapshot {
+  id                  String   @id @default(uuid()) @db.Uuid
+  projectId           String   @map("project_id") @db.Uuid
+  version             Int
+  fingerprint         String
+  previousFingerprint String?  @map("previous_fingerprint")
+  readinessOverall    Float    @map("readiness_overall")
+  note                String?
+  content             Json
+  issuedById          String   @map("issued_by_id") @db.Uuid
+  issuedAt            DateTime @default(now()) @map("issued_at") @db.Timestamptz
+
+  project  Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  issuedBy User    @relation(fields: [issuedById], references: [id])
+
+  @@unique([projectId, version])
+  @@map("passport_snapshots")
+}
+
+model AuditEvent {
+  id        String   @id @default(uuid()) @db.Uuid
+  projectId String   @map("project_id") @db.Uuid
+  actorId   String   @map("actor_id") @db.Uuid
+  type      String
+  summary   String
+  data      Json?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  actor   User    @relation(fields: [actorId], references: [id])
+
+  @@index([projectId, createdAt])
+  @@map("audit_events")
+}

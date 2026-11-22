@@ -1,0 +1,114 @@
+name: greenforce
+
+# Production/staging stack for a Docker host. Uses the images published by release.yml — nothing is built here.
+# Copied to <DEPLOY_PATH>/docker-compose.yml by the Deploy workflow; runtime secrets live in <DEPLOY_PATH>/backend.env.
+# IMAGE_REGISTRY and IMAGE_TAG are written to <DEPLOY_PATH>/.env by remote-deploy.sh.
+#
+# Put a TLS-terminating reverse proxy (Caddy, nginx, a cloud load balancer) in front of the frontend port.
+# To use a managed PostgreSQL instead of the bundled one, set DATABASE_URL in backend.env and set
+# COMPOSE_PROFILES= (empty) in .env so the postgres service is not started.
+
+x-service-defaults: &service-defaults
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "5"
+
+x-backend-env: &backend-env
+  env_file:
+    - path: backend.env
+      required: true
+
+services:
+  postgres:
+    <<: [*service-defaults, *backend-env]
+    image: postgres:18.6-alpine3.24
+    profiles: ["bundled-db"]
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    shm_size: 256mb
+    stop_grace_period: 30s
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -h 127.0.0.1 -p 5432 -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+      start_interval: 2s
+
+  migrate:
+    <<: [*service-defaults, *backend-env]
+    restart: "no"
+    image: ${IMAGE_REGISTRY:?set IMAGE_REGISTRY}/greenforce-api-migrate:${IMAGE_TAG:?set IMAGE_TAG}
+    environment:
+      POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+      UPLOAD_DIR: /app/backend/uploads
+    volumes:
+      - uploads:/app/backend/uploads
+    cap_drop:
+      - ALL
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: false
+
+  backend:
+    <<: [*service-defaults, *backend-env]
+    image: ${IMAGE_REGISTRY:?set IMAGE_REGISTRY}/greenforce-api:${IMAGE_TAG:?set IMAGE_TAG}
+    environment:
+      NODE_ENV: production
+      API_PORT: "4000"
+      POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+      UPLOAD_DIR: /app/backend/uploads
+    ports:
+      - "127.0.0.1:${BACKEND_PORT:-4000}:4000"
+    volumes:
+      - uploads:/app/backend/uploads
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:4000/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+      start_interval: 2s
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: false
+
+  frontend:
+    <<: *service-defaults
+    image: ${IMAGE_REGISTRY:?set IMAGE_REGISTRY}/greenforce-web:${IMAGE_TAG:?set IMAGE_TAG}
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:-3000}:3000"
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /app/frontend/.next/cache:uid=1000,gid=1000
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000/login"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+      start_interval: 2s
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+  uploads:

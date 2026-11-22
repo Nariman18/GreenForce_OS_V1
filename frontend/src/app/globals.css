@@ -1,0 +1,53 @@
+@import 'tailwindcss';
+
+/*
+ * GreenForce design tokens (MVP). All colours used by components come from these tokens or
+ * Tailwind's stone/status palettes, so the visual layer can be replaced without touching logic.
+ */
+@theme {
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  --color-pine-50: #eef7f3;
+  --color-pine-100: #d5ece2;
+  --color-pine-200: #acd8c6;
+  --color-pine-300: #7bbda4;
+  --color-pine-400: #4c9e82;
+  --color-pine-500: #2f8268;
+  --color-pine-600: #226853;
+  --color-pine-700: #1d5444;
+  --color-pine-800: #1a4438;
+  --color-pine-900: #16382f;
+  --color-pine-950: #0b201a;
+
+  --color-canvas: #f6f5f1;
+  --color-surface: #ffffff;
+  --color-ink: #17201c;
+  --color-muted: #5f6b66;
+  --color-line: #e3e1da;
+
+  --radius-card: 0.875rem;
+  --shadow-card: 0 1px 2px rgb(23 32 28 / 0.05), 0 1px 1px rgb(23 32 28 / 0.03);
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    @apply bg-canvas text-ink antialiased;
+  }
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-pine-500;
+  }
+}
+
+@media print {
+  body {
+    background: #fff;
+  }
+  .no-print {
+    display: none !important;
+  }
+}
