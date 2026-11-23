@@ -25,7 +25,7 @@ x-backend-env: &backend-env
 services:
   postgres:
     <<: [*service-defaults, *backend-env]
-    image: postgres:18.6-alpine3.24
+    image: postgres:19.0-alpine3.24
     ports:
       - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
